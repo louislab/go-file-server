@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Upload Management</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ["IBM Plex Sans", "Segoe UI", "sans-serif"],
+            display: ["Space Grotesk", "Avenir Next", "sans-serif"],
+          },
+          boxShadow: {
+            panel: "0 24px 60px rgba(16, 16, 16, 0.08)",
+          },
+          colors: {
+            ink: "#101010",
+            mist: "#f4f4f1",
+            line: "#d4d4d0",
+            muted: "#5a5a5a",
+          },
+        },
+      },
+    };
+  </script>
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+</head>
+<body class="min-h-screen bg-[radial-gradient(circle_at_top_left,rgba(16,16,16,0.05),transparent_36%),linear-gradient(180deg,#fafaf7_0%,#f4f4f1_100%)] text-ink antialiased">
+  <div id="app" class="mx-auto w-[min(1120px,calc(100%-2rem))] py-8 md:py-10">
+    <section class="rounded-t-[32px] border border-b-0 border-line bg-white/85 p-8 shadow-panel backdrop-blur">
+      <div class="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+        <div>
+          <p class="mb-3 text-[0.72rem] uppercase tracking-[0.18em] text-muted">Host Management</p>
+          <h1 class="font-display text-[clamp(2.25rem,5vw,4.5rem)] uppercase leading-[0.96]">Uploaded files</h1>
+          <p class="mt-4 max-w-4xl text-base leading-7 text-muted">This view is bound to localhost so only the host machine can inspect or delete stored uploads.</p>
+        </div>
+        <div>
+          <div class="rounded-[24px] border border-line bg-mist p-2">
+            <div class="flex flex-col items-center gap-2 text-center">
+              <div class="aspect-square w-full max-w-[208px] rounded-[18px] border border-line bg-white p-4">
+                <div class="flex h-full w-full items-center justify-center">
+                <div
+                  v-if="uploadURL"
+                  ref="qrCode"
+                    class="flex h-full w-full items-center justify-center"
+                  aria-label="QR code for upload site"
+                ></div>
+                <p v-else class="text-sm text-muted">Detecting upload address...</p>
+                </div>
+              </div>
+              <a
+                v-if="uploadURL"
+                :href="uploadURL"
+                target="_blank"
+                rel="noreferrer"
+                class="break-all text-sm font-semibold underline decoration-line underline-offset-4 transition hover:text-muted"
+              >
+                {{ uploadURL }}
+              </a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="rounded-b-[32px] border border-line bg-white/85 p-6 shadow-panel backdrop-blur">
+      <div class="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+        <div>
+          <h2 class="font-display text-base uppercase tracking-[0.08em]">Stored uploads</h2>
+          <p class="mt-1 text-sm text-muted">{{ selectedCount }} selected</p>
+        </div>
+        <div class="flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            @click="deleteSelectedFiles"
+            :disabled="isLoading || isBatchDeleting || selectedCount === 0"
+            class="rounded-full border border-red-800 px-4 py-2 text-red-800 transition hover:bg-red-800 hover:text-white disabled:cursor-not-allowed disabled:opacity-45"
+          >
+            {{ isBatchDeleting ? `Deleting ${selectedCount}...` : `Delete selected (${selectedCount})` }}
+          </button>
+          <button
+            type="button"
+            @click="loadFiles"
+            :disabled="isLoading || isBatchDeleting"
+            class="rounded-full border border-ink px-4 py-2 transition hover:bg-ink hover:text-white disabled:cursor-not-allowed disabled:opacity-45"
+          >
+            {{ isLoading ? 'Refreshing...' : 'Refresh' }}
+          </button>
+        </div>
+      </div>
+
+      <p
+        aria-live="polite"
+        :class="statusKind === 'error' ? 'text-red-800' : statusKind === 'success' ? 'text-green-800' : 'text-muted'"
+        class="mt-4 min-h-6"
+      >
+        {{ statusMessage }}
+      </p>
+
+      <div class="mt-4 overflow-hidden rounded-[24px] border border-line bg-white/90">
+        <div v-if="files.length === 0" class="px-5 py-8 text-muted">No uploads yet.</div>
+
+        <div v-else class="overflow-x-auto">
+          <table class="min-w-[960px] w-full table-fixed border-collapse">
+            <colgroup>
+              <col class="w-16">
+              <col class="w-[34%]">
+              <col class="w-[12%]">
+              <col class="w-[18%]">
+              <col class="w-[18%]">
+              <col class="w-[18%]">
+            </colgroup>
+            <thead class="border-b border-line">
+              <tr class="text-left text-xs uppercase tracking-[0.08em] text-muted">
+                <th class="px-5 py-4 text-center">
+                  <button
+                    type="button"
+                    role="checkbox"
+                    :aria-checked="allSelected ? 'true' : (someSelected ? 'mixed' : 'false')"
+                    @click="toggleSelectAll"
+                    :disabled="files.length === 0 || isLoading || isBatchDeleting"
+                    :class="allSelected || someSelected ? 'bg-ink text-white' : 'bg-white text-transparent'"
+                    class="mx-auto flex h-6 w-6 items-center justify-center rounded-full border border-ink transition hover:bg-ink hover:text-white disabled:cursor-not-allowed disabled:opacity-45"
+                    aria-label="Select all files"
+                  >
+                    <svg class="h-3.5 w-3.5" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                      <path d="M3.5 8.25L6.5 11.25L12.5 4.75" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                    </svg>
+                  </button>
+                </th>
+                <th class="px-5 py-4">Name</th>
+                <th class="px-5 py-4">Size</th>
+                <th class="px-5 py-4">Uploaded</th>
+                <th class="px-5 py-4">Origin</th>
+                <th class="px-5 py-4">Actions</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-line">
+              <tr v-for="file in files" :key="file.id" class="align-top">
+                <td class="px-5 py-5 text-center">
+                  <button
+                    type="button"
+                    role="checkbox"
+                    :aria-checked="selectedIds.includes(file.id) ? 'true' : 'false'"
+                    @click="toggleSelection(file.id)"
+                    :disabled="isBatchDeleting"
+                    :class="selectedIds.includes(file.id) ? 'bg-ink text-white' : 'bg-white text-transparent'"
+                    class="mx-auto flex h-6 w-6 items-center justify-center rounded-full border border-ink transition hover:bg-ink hover:text-white disabled:cursor-not-allowed disabled:opacity-45"
+                    :aria-label="`Select ${file.originalName}`"
+                  >
+                    <svg class="h-3.5 w-3.5" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                      <path d="M3.5 8.25L6.5 11.25L12.5 4.75" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                    </svg>
+                  </button>
+                </td>
+                <td class="px-5 py-5">
+                  <div class="break-all font-semibold leading-6">{{ file.originalName }}</div>
+                  <div class="mt-1 break-all text-sm text-muted">{{ file.mimeType || 'application/octet-stream' }}</div>
+                </td>
+                <td class="px-5 py-5 text-sm md:text-base">{{ formatBytes(file.fileSize) }}</td>
+                <td class="px-5 py-5 text-sm text-muted">{{ formatTimestamp(file.uploadedAt) }}</td>
+                <td class="px-5 py-5 text-sm text-muted">
+                  <div class="break-all">{{ file.clientIP || 'Unknown' }}</div>
+                  <div v-if="file.clientHostname" class="break-all">{{ file.clientHostname }}</div>
+                </td>
+                <td class="px-5 py-5">
+                  <div class="flex flex-wrap gap-2">
+                    <a
+                      :href="`/api/files/${file.id}/view`"
+                      target="_blank"
+                      rel="noreferrer"
+                      class="inline-flex items-center rounded-full border border-ink px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.08em] transition hover:bg-ink hover:text-white"
+                    >
+                      View
+                    </a>
+                    <a
+                      :href="`/api/files/${file.id}/view?download=1`"
+                      download
+                      class="inline-flex items-center rounded-full border border-ink px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.08em] transition hover:bg-ink hover:text-white"
+                    >
+                      Download
+                    </a>
+                    <button
+                      type="button"
+                      @click="deleteFile(file)"
+                      :disabled="isBatchDeleting"
+                      class="rounded-full border border-red-800 px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.08em] text-red-800 transition hover:bg-red-800 hover:text-white"
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    const { createApp } = Vue;
+
+    createApp({
+      data() {
+        return {
+          files: [],
+          selectedIds: [],
+          uploadURL: "",
+          hostInfoError: "",
+          isLoading: false,
+          isBatchDeleting: false,
+          statusMessage: "",
+          statusKind: "",
+          qrCodeInstance: null,
+        };
+      },
+      mounted() {
+        this.loadHostInfo();
+        this.loadFiles();
+      },
+      computed: {
+        selectedCount() {
+          return this.selectedIds.length;
+        },
+        allSelected() {
+          return this.files.length > 0 && this.selectedIds.length === this.files.length;
+        },
+        someSelected() {
+          return this.selectedIds.length > 0 && this.selectedIds.length < this.files.length;
+        },
+      },
+      methods: {
+        async loadHostInfo() {
+          this.hostInfoError = "";
+
+          try {
+            const response = await fetch("/api/host");
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) {
+              throw new Error(payload.error || "Failed to load upload address");
+            }
+
+            this.uploadURL = typeof payload.uploadURL === "string" ? payload.uploadURL : "";
+            this.$nextTick(() => {
+              this.renderQRCode();
+            });
+          } catch (error) {
+            this.uploadURL = "";
+            this.hostInfoError = error instanceof Error ? error.message : "Failed to load upload address";
+          }
+        },
+        async loadFiles() {
+          this.isLoading = true;
+          this.setStatus("Loading uploads...", "");
+
+          try {
+            const response = await fetch("/api/files");
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) {
+              throw new Error(payload.error || "Failed to load uploads");
+            }
+            this.files = Array.isArray(payload.files) ? payload.files : [];
+            this.selectedIds = this.selectedIds.filter((id) => this.files.some((file) => file.id === id));
+            this.setStatus("", "");
+          } catch (error) {
+            this.files = [];
+            this.selectedIds = [];
+            this.setStatus(error instanceof Error ? error.message : "Failed to load uploads", "error");
+          } finally {
+            this.isLoading = false;
+          }
+        },
+        toggleSelection(id) {
+          if (this.selectedIds.includes(id)) {
+            this.selectedIds = this.selectedIds.filter((value) => value !== id);
+            return;
+          }
+          this.selectedIds = [...this.selectedIds, id];
+        },
+        toggleSelectAll() {
+          if (this.allSelected) {
+            this.selectedIds = [];
+            return;
+          }
+          this.selectedIds = this.files.map((file) => file.id);
+        },
+        async deleteFile(file) {
+          const confirmed = window.confirm(`Delete ${file.originalName}? This removes the stored file and metadata.`);
+          if (!confirmed) {
+            return;
+          }
+
+          this.setStatus(`Deleting ${file.originalName}...`, "");
+
+          try {
+            const response = await fetch(`/api/files/${file.id}`, { method: "DELETE" });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) {
+              throw new Error(payload.error || "Delete failed");
+            }
+            this.selectedIds = this.selectedIds.filter((id) => id !== file.id);
+            this.setStatus(`Deleted ${file.originalName}.`, "success");
+            await this.loadFiles();
+          } catch (error) {
+            this.setStatus(error instanceof Error ? error.message : "Delete failed", "error");
+          }
+        },
+        async deleteSelectedFiles() {
+          if (this.selectedIds.length === 0 || this.isBatchDeleting) {
+            return;
+          }
+
+          const selectedFiles = this.files.filter((file) => this.selectedIds.includes(file.id));
+          const confirmed = window.confirm(`Delete ${selectedFiles.length} selected file${selectedFiles.length === 1 ? "" : "s"}? This removes the stored files and metadata.`);
+          if (!confirmed) {
+            return;
+          }
+
+          this.isBatchDeleting = true;
+          this.setStatus(`Deleting ${selectedFiles.length} selected file${selectedFiles.length === 1 ? "" : "s"}...`, "");
+
+          let deletedCount = 0;
+          const failures = [];
+
+          for (const file of selectedFiles) {
+            try {
+              const response = await fetch(`/api/files/${file.id}`, { method: "DELETE" });
+              const payload = await response.json().catch(() => ({}));
+              if (!response.ok) {
+                throw new Error(payload.error || `Delete failed for ${file.originalName}`);
+              }
+              deletedCount += 1;
+            } catch (error) {
+              failures.push(error instanceof Error ? error.message : `Delete failed for ${file.originalName}`);
+            }
+          }
+
+          this.selectedIds = [];
+          await this.loadFiles();
+          this.isBatchDeleting = false;
+
+          if (failures.length > 0) {
+            this.setStatus(`Deleted ${deletedCount} file${deletedCount === 1 ? "" : "s"}. ${failures.length} failed.`, "error");
+            return;
+          }
+
+          this.setStatus(`Deleted ${deletedCount} file${deletedCount === 1 ? "" : "s"}.`, "success");
+        },
+        renderQRCode() {
+          const container = this.$refs.qrCode;
+          if (!container || !this.uploadURL || typeof QRCode === "undefined") {
+            return;
+          }
+
+          container.innerHTML = "";
+          this.qrCodeInstance = new QRCode(container, {
+            text: this.uploadURL,
+            width: 176,
+            height: 176,
+            colorDark: "#101010",
+            colorLight: "#ffffff",
+            correctLevel: QRCode.CorrectLevel.M,
+          });
+        },
+        formatBytes(bytes) {
+          if (bytes < 1024) {
+            return `${bytes} B`;
+          }
+          const units = ["KB", "MB", "GB", "TB"];
+          let value = bytes / 1024;
+          let unitIndex = 0;
+          while (value >= 1024 && unitIndex < units.length - 1) {
+            value /= 1024;
+            unitIndex += 1;
+          }
+          return `${value.toFixed(value >= 10 ? 1 : 2)} ${units[unitIndex]}`;
+        },
+        formatTimestamp(value) {
+          const date = new Date(value);
+          if (Number.isNaN(date.getTime())) {
+            return value;
+          }
+          return date.toLocaleString();
+        },
+        setStatus(message, kind) {
+          this.statusMessage = message;
+          this.statusKind = kind;
+        },
+      },
+    }).mount("#app");
+  </script>
+</body>
+</html>

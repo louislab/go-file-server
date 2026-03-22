@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Local File Transfer</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ["IBM Plex Sans", "Segoe UI", "sans-serif"],
+            display: ["Space Grotesk", "Avenir Next", "sans-serif"],
+          },
+          boxShadow: {
+            panel: "0 24px 60px rgba(16, 16, 16, 0.08)",
+          },
+          colors: {
+            ink: "#101010",
+            mist: "#f4f4f1",
+            line: "#d4d4d0",
+            muted: "#5a5a5a",
+            surface: "#ecece8",
+          },
+        },
+      },
+    };
+  </script>
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+</head>
+<body class="min-h-screen bg-[radial-gradient(circle_at_top_left,rgba(16,16,16,0.05),transparent_36%),linear-gradient(180deg,#fafaf7_0%,#f4f4f1_100%)] text-ink antialiased">
+  <div id="app" class="mx-auto w-[min(1120px,calc(100%-2rem))] py-8 md:py-10">
+    <section class="rounded-t-[32px] border border-b-0 border-line bg-white/85 p-8 shadow-panel backdrop-blur">
+      <p class="mb-3 text-[0.72rem] uppercase tracking-[0.18em] text-muted">Local File Transfer</p>
+      <h1 class="font-display text-[clamp(2.25rem,5vw,4.5rem)] uppercase leading-[0.96]">Drop files onto the host machine.</h1>
+      <p class="mt-4 max-w-4xl text-base leading-7 text-muted">Choose files from Finder or drag them into the drop zone. The host receives them immediately after you confirm upload.</p>
+    </section>
+
+    <section class="rounded-b-[32px] border border-line bg-white/85 p-6 shadow-panel backdrop-blur">
+      <button
+        type="button"
+        tabindex="0"
+        aria-label="Select files to upload"
+        @click="openPicker"
+        @keydown.enter.prevent="openPicker"
+        @keydown.space.prevent="openPicker"
+        @dragenter.prevent="dragOver = true"
+        @dragover.prevent="dragOver = true"
+        @dragleave.prevent="dragOver = false"
+        @dragend.prevent="dragOver = false"
+        @drop.prevent="handleDrop"
+        :class="dragOver ? 'translate-y-[-2px] border-solid bg-black/10' : 'border-dashed bg-black/[0.03]'"
+        class="grid min-h-[260px] w-full place-items-center rounded-[28px] border-2 border-ink px-6 py-8 text-center transition duration-200"
+      >
+        <div>
+          <p class="text-2xl font-semibold">Drag and drop files here</p>
+          <p class="mt-2 text-muted">or click to browse from your computer</p>
+        </div>
+      </button>
+
+      <input ref="fileInput" class="hidden" type="file" multiple @change="handlePickerChange">
+
+      <div class="mt-6 grid gap-4 md:grid-cols-2">
+        <article class="rounded-[18px] border border-line bg-surface px-5 py-4">
+          <span class="text-[0.72rem] uppercase tracking-[0.08em] text-muted">Selected files</span>
+          <strong class="mt-2 block text-[1.65rem]">{{ selectedFiles.length }}</strong>
+        </article>
+        <article class="rounded-[18px] border border-line bg-surface px-5 py-4">
+          <span class="text-[0.72rem] uppercase tracking-[0.08em] text-muted">Total size</span>
+          <strong class="mt-2 block text-[1.65rem]">{{ formatBytes(totalSize) }}</strong>
+        </article>
+      </div>
+
+      <section class="mt-6 overflow-hidden rounded-[24px] border border-line bg-white/90">
+        <div class="flex items-center justify-between gap-4 px-5 py-4">
+          <h2 class="font-display text-base uppercase tracking-[0.08em]">Selection</h2>
+          <button
+            type="button"
+            @click="clearFiles"
+            :disabled="isUploading || selectedFiles.length === 0"
+            class="rounded-full border border-ink px-4 py-2 transition hover:bg-ink hover:text-white disabled:cursor-not-allowed disabled:opacity-45"
+          >
+            Clear
+          </button>
+        </div>
+
+        <ul v-if="selectedFiles.length > 0" class="divide-y divide-line">
+          <li v-for="file in selectedFiles" :key="file.name + ':' + file.size + ':' + file.lastModified" class="flex items-center justify-between gap-4 px-5 py-4">
+            <div class="min-w-0">
+              <div class="break-words font-semibold">{{ file.name }}</div>
+              <div class="text-sm text-muted">{{ file.type || 'Binary file' }}</div>
+            </div>
+            <strong class="shrink-0">{{ formatBytes(file.size) }}</strong>
+          </li>
+        </ul>
+        <div v-else class="px-5 py-6 text-muted">No files selected yet.</div>
+      </section>
+
+      <div class="mt-6 flex justify-end">
+        <button
+          type="button"
+          @click="uploadFiles"
+          :disabled="isUploading || selectedFiles.length === 0"
+          class="min-w-[180px] rounded-full border border-ink bg-ink px-5 py-3 text-white transition hover:bg-white hover:text-ink disabled:cursor-not-allowed disabled:opacity-45"
+        >
+          {{ isUploading ? 'Uploading...' : 'Upload files' }}
+        </button>
+      </div>
+
+      <p
+        aria-live="polite"
+        :class="statusKind === 'error' ? 'text-red-800' : statusKind === 'success' ? 'text-green-800' : 'text-muted'"
+        class="mt-4 min-h-6"
+      >
+        {{ statusMessage }}
+      </p>
+    </section>
+  </div>
+
+  <script>
+    const { createApp } = Vue;
+
+    createApp({
+      data() {
+        return {
+          selectedFiles: [],
+          dragOver: false,
+          isUploading: false,
+          statusMessage: "",
+          statusKind: "",
+        };
+      },
+      computed: {
+        totalSize() {
+          return this.selectedFiles.reduce((total, file) => total + file.size, 0);
+        },
+      },
+      methods: {
+        openPicker() {
+          this.$refs.fileInput.click();
+        },
+        handlePickerChange(event) {
+          this.setFiles(Array.from(event.target.files || []));
+          this.setStatus("", "");
+        },
+        handleDrop(event) {
+          this.dragOver = false;
+
+          const { files, skippedDirectoryCount } = this.extractDroppedFiles(event.dataTransfer);
+          this.setFiles(files);
+
+          if (skippedDirectoryCount === 0) {
+            this.setStatus("", "");
+            return;
+          }
+
+          const folderLabel = `${skippedDirectoryCount} folder${skippedDirectoryCount === 1 ? "" : "s"}`;
+          if (files.length === 0) {
+            this.setStatus(`Folders can't be uploaded. Removed ${folderLabel} from the drop.`, "error");
+            return;
+          }
+
+          this.setStatus(`Ignored ${folderLabel}. Only files can be uploaded.`, "error");
+        },
+        setFiles(files) {
+          this.selectedFiles = files;
+        },
+        extractDroppedFiles(dataTransfer) {
+          if (!dataTransfer) {
+            return { files: [], skippedDirectoryCount: 0 };
+          }
+
+          const items = Array.from(dataTransfer.items || []);
+          if (items.length === 0) {
+            return { files: Array.from(dataTransfer.files || []), skippedDirectoryCount: 0 };
+          }
+
+          const files = [];
+          let skippedDirectoryCount = 0;
+
+          for (const item of items) {
+            if (item.kind !== "file") {
+              continue;
+            }
+
+            const entry = typeof item.webkitGetAsEntry === "function" ? item.webkitGetAsEntry() : null;
+            if (entry && entry.isDirectory) {
+              skippedDirectoryCount += 1;
+              continue;
+            }
+
+            const file = item.getAsFile();
+            if (file) {
+              files.push(file);
+              continue;
+            }
+
+            skippedDirectoryCount += 1;
+          }
+
+          if (files.length === 0 && skippedDirectoryCount === 0) {
+            return { files: Array.from(dataTransfer.files || []), skippedDirectoryCount: 0 };
+          }
+
+          return { files, skippedDirectoryCount };
+        },
+        clearFiles() {
+          this.selectedFiles = [];
+          this.$refs.fileInput.value = "";
+          this.setStatus("", "");
+        },
+        async uploadFiles() {
+          if (this.selectedFiles.length === 0 || this.isUploading) {
+            return;
+          }
+
+          const formData = new FormData();
+          for (const file of this.selectedFiles) {
+            formData.append("files", file, file.name);
+          }
+
+          this.isUploading = true;
+          this.setStatus(`Uploading ${this.selectedFiles.length} file${this.selectedFiles.length === 1 ? "" : "s"}...`, "");
+
+          try {
+            const response = await fetch("/api/upload", {
+              method: "POST",
+              body: formData,
+            });
+
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) {
+              throw new Error(payload.error || "Upload failed");
+            }
+
+            const uploadedCount = Array.isArray(payload.files) ? payload.files.length : 0;
+            this.setStatus(`Uploaded ${uploadedCount} file${uploadedCount === 1 ? "" : "s"} successfully.`, "success");
+            this.selectedFiles = [];
+            this.$refs.fileInput.value = "";
+          } catch (error) {
+            this.setStatus(error instanceof Error ? error.message : "Upload failed", "error");
+          } finally {
+            this.isUploading = false;
+          }
+        },
+        formatBytes(bytes) {
+          if (bytes < 1024) {
+            return `${bytes} B`;
+          }
+          const units = ["KB", "MB", "GB", "TB"];
+          let value = bytes / 1024;
+          let unitIndex = 0;
+          while (value >= 1024 && unitIndex < units.length - 1) {
+            value /= 1024;
+            unitIndex += 1;
+          }
+          return `${value.toFixed(value >= 10 ? 1 : 2)} ${units[unitIndex]}`;
+        },
+        setStatus(message, kind) {
+          this.statusMessage = message;
+          this.statusKind = kind;
+        },
+      },
+    }).mount("#app");
+  </script>
+</body>
+</html>

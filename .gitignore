@@ -1,0 +1,19 @@
+# macOS
+.DS_Store
+
+# Go build and test artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+coverage.out
+bin/
+dist/
+
+# Local runtime data
+/data/*.db
+/data/*.db-*
+/uploads/
