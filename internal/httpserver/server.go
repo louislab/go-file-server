@@ -13,30 +13,34 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 
 	"go-file-server/internal/db"
+	"go-file-server/internal/netstate"
 	"go-file-server/internal/storage"
 )
 
 type Config struct {
-	PublicAddr string
-	PublicURL  string
-	AdminAddr  string
-	Repository *db.Repository
-	Storage    *storage.Service
-	Logger     *log.Logger
+	PublicAddr       string
+	AdminAddr        string
+	UploadSessionTTL time.Duration
+	Repository       *db.Repository
+	Storage          *storage.Service
+	Logger           *log.Logger
 }
 
 type Server struct {
-	repo      *db.Repository
-	storage   *storage.Service
-	logger    *log.Logger
-	assets    fs.FS
-	publicURL string
+	repo             *db.Repository
+	storage          *storage.Service
+	logger           *log.Logger
+	assets           fs.FS
+	staticFS         fs.FS
+	publicAddr       string
+	uploadSessionTTL time.Duration
 }
 
 func New(config Config) *Server {
@@ -45,18 +49,27 @@ func New(config Config) *Server {
 		logger = log.Default()
 	}
 
+	staticFS, err := fs.Sub(mustAssetFS(logger), "static")
+	if err != nil {
+		logger.Fatalf("load static assets: %v", err)
+	}
+
 	return &Server{
-		repo:      config.Repository,
-		storage:   config.Storage,
-		logger:    logger,
-		assets:    mustAssetFS(logger),
-		publicURL: strings.TrimRight(strings.TrimSpace(config.PublicURL), "/"),
+		repo:             config.Repository,
+		storage:          config.Storage,
+		logger:           logger,
+		assets:           mustAssetFS(logger),
+		staticFS:         staticFS,
+		publicAddr:       strings.TrimSpace(config.PublicAddr),
+		uploadSessionTTL: config.UploadSessionTTL,
 	}
 }
 
 func (s *Server) PublicHandler() http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(s.assets))))
+	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(s.staticFS))))
+	mux.HandleFunc("/api/upload/sessions", s.handleUploadSessions)
+	mux.HandleFunc("/api/upload/sessions/", s.handleUploadSessionItem)
 	mux.HandleFunc("/api/upload", s.handleUpload)
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/", s.serveUploadPage)
@@ -65,7 +78,7 @@ func (s *Server) PublicHandler() http.Handler {
 
 func (s *Server) AdminHandler() http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(s.assets))))
+	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(s.staticFS))))
 	mux.HandleFunc("/api/host", s.handleHostInfo)
 	mux.HandleFunc("/api/files", s.handleFilesCollection)
 	mux.HandleFunc("/api/files/", s.handleFileItem)
@@ -79,8 +92,14 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_, _ = w.Write([]byte(`{"ok":true}`))
+	hostInfo := netstate.SnapshotHTTP(s.publicAddr)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":                 true,
+		"uploadURL":          hostInfo.UploadURL,
+		"bonjourURL":         hostInfo.BonjourURL,
+		"activeAddressCount": len(hostInfo.Addresses),
+		"network":            hostInfo,
+	})
 }
 
 func (s *Server) serveUploadPage(w http.ResponseWriter, r *http.Request) {
@@ -193,6 +212,258 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{"files": results})
 }
 
+type uploadSessionInitRequest struct {
+	OriginalName string `json:"originalName"`
+	FileSize     int64  `json:"fileSize"`
+	MIMEType     string `json:"mimeType"`
+	LastModified int64  `json:"lastModified"`
+	ResumeKey    string `json:"resumeKey"`
+}
+
+type uploadSessionPayload struct {
+	ID            string `json:"id"`
+	OriginalName  string `json:"originalName"`
+	FileSize      int64  `json:"fileSize"`
+	MIMEType      string `json:"mimeType"`
+	BytesReceived int64  `json:"bytesReceived"`
+	Complete      bool   `json:"complete"`
+	CreatedAt     string `json:"createdAt"`
+	UpdatedAt     string `json:"updatedAt"`
+}
+
+func (s *Server) handleUploadSessions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+
+	var request uploadSessionInitRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid upload session request"})
+		return
+	}
+
+	request.OriginalName = strings.TrimSpace(request.OriginalName)
+	request.MIMEType = strings.TrimSpace(request.MIMEType)
+	request.ResumeKey = normalizedResumeKey(request.ResumeKey, request.OriginalName, request.FileSize, request.LastModified)
+	if request.OriginalName == "" || request.FileSize <= 0 || request.ResumeKey == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "missing resumable upload metadata"})
+		return
+	}
+
+	if existing, err := s.repo.FindActiveUploadSessionByResumeKey(r.Context(), request.ResumeKey); err == nil {
+		if s.isUploadSessionExpired(existing, time.Now().UTC()) {
+			if cleanupErr := s.abandonUploadSession(r.Context(), existing); cleanupErr != nil {
+				s.logger.Printf("cleanup expired upload session: %v", cleanupErr)
+				writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "cleanup expired upload session"})
+				return
+			}
+		} else {
+			existing = s.syncUploadSessionProgress(r.Context(), existing)
+			writeJSON(w, http.StatusOK, map[string]any{"session": uploadSessionPayloadFromRecord(existing)})
+			return
+		}
+	} else if !errors.Is(err, db.ErrUploadSessionNotFound) {
+		s.logger.Printf("load upload session: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "load upload session"})
+		return
+	}
+
+	uploadID := uuid.NewString()
+	prepared, err := s.storage.PrepareResumable(uploadID, request.OriginalName)
+	if err != nil {
+		s.logger.Printf("prepare resumable upload: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "prepare upload"})
+		return
+	}
+
+	clientIP := clientIPFromRequest(r.RemoteAddr)
+	now := time.Now().UTC()
+	session := db.UploadSession{
+		ID:              uploadID,
+		ResumeKey:       request.ResumeKey,
+		OriginalName:    request.OriginalName,
+		StoredPath:      prepared.StoredPath,
+		FileSize:        request.FileSize,
+		MIMEType:        request.MIMEType,
+		ClientIP:        clientIP,
+		ClientHostname:  lookupHostname(r.Context(), clientIP),
+		ClientUserAgent: r.UserAgent(),
+		BytesReceived:   0,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+
+	if err := s.repo.CreateUploadSession(r.Context(), session); err != nil {
+		_ = s.storage.DeletePartial(prepared.StoredPath)
+		s.logger.Printf("create upload session: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "create upload session"})
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]any{"session": uploadSessionPayloadFromRecord(session)})
+}
+
+func (s *Server) handleUploadSessionItem(w http.ResponseWriter, r *http.Request) {
+	id := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/upload/sessions/"), "/")
+	if id == "" {
+		http.NotFound(w, r)
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		s.handleUploadSessionStatus(w, r, id)
+	case http.MethodPut:
+		s.handleUploadChunk(w, r, id)
+	default:
+		methodNotAllowed(w)
+	}
+}
+
+func (s *Server) handleUploadSessionStatus(w http.ResponseWriter, r *http.Request, id string) {
+	session, err := s.repo.GetUploadSession(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, db.ErrUploadSessionNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]any{"error": "upload session not found"})
+			return
+		}
+		s.logger.Printf("get upload session: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "load upload session"})
+		return
+	}
+
+	session = s.syncUploadSessionProgress(r.Context(), session)
+	writeJSON(w, http.StatusOK, map[string]any{"session": uploadSessionPayloadFromRecord(session)})
+}
+
+func (s *Server) handleUploadChunk(w http.ResponseWriter, r *http.Request, id string) {
+	session, err := s.repo.GetUploadSession(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, db.ErrUploadSessionNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]any{"error": "upload session not found"})
+			return
+		}
+		s.logger.Printf("get upload session: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "load upload session"})
+		return
+	}
+	if session.CompletedAt != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"session": uploadSessionPayloadFromRecord(session)})
+		return
+	}
+	if s.isUploadSessionExpired(session, time.Now().UTC()) {
+		if cleanupErr := s.abandonUploadSession(r.Context(), session); cleanupErr != nil {
+			s.logger.Printf("cleanup expired upload session: %v", cleanupErr)
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "cleanup expired upload session"})
+			return
+		}
+		writeJSON(w, http.StatusGone, map[string]any{"error": "upload session expired"})
+		return
+	}
+
+	session = s.syncUploadSessionProgress(r.Context(), session)
+
+	offset, err := parseUploadOffset(r.Header.Get("X-Upload-Offset"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid upload offset"})
+		return
+	}
+	if offset != session.BytesReceived {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":          "upload offset mismatch",
+			"expectedOffset": session.BytesReceived,
+			"session":        uploadSessionPayloadFromRecord(session),
+		})
+		return
+	}
+
+	remaining := session.FileSize - session.BytesReceived
+	if remaining <= 0 {
+		writeJSON(w, http.StatusOK, map[string]any{"session": uploadSessionPayloadFromRecord(session)})
+		return
+	}
+
+	body := http.MaxBytesReader(w, r.Body, remaining)
+	written, err := s.storage.AppendChunk(session.StoredPath, offset, body)
+	if err != nil {
+		s.logger.Printf("append upload chunk: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "append upload chunk"})
+		return
+	}
+	if written == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "empty upload chunk"})
+		return
+	}
+
+	now := time.Now().UTC()
+	session.BytesReceived += written
+	session.UpdatedAt = now
+	if session.BytesReceived > session.FileSize {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "upload exceeded declared file size"})
+		return
+	}
+
+	if session.BytesReceived < session.FileSize {
+		if err := s.repo.UpdateUploadSessionProgress(r.Context(), session.ID, session.BytesReceived, now); err != nil {
+			s.logger.Printf("update upload session: %v", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "update upload session"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"session": uploadSessionPayloadFromRecord(session)})
+		return
+	}
+
+	if err := s.storage.FinalizeResumable(session.StoredPath); err != nil {
+		s.logger.Printf("finalize upload chunk: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "finalize upload"})
+		return
+	}
+
+	finalMIMEType, err := s.storage.DetectMIME(session.StoredPath, session.OriginalName, session.MIMEType)
+	if err != nil {
+		s.logger.Printf("detect upload mime type: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "inspect uploaded file"})
+		return
+	}
+
+	record := db.FileRecord{
+		ID:              session.ID,
+		OriginalName:    session.OriginalName,
+		StoredPath:      session.StoredPath,
+		FileSize:        session.FileSize,
+		MIMEType:        finalMIMEType,
+		UploadedAt:      now,
+		ClientIP:        session.ClientIP,
+		ClientHostname:  session.ClientHostname,
+		ClientUserAgent: session.ClientUserAgent,
+	}
+	if err := s.repo.InsertFile(r.Context(), record); err != nil {
+		s.logger.Printf("insert resumable file record: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "save upload metadata"})
+		return
+	}
+	if err := s.repo.DeleteUploadSession(r.Context(), session.ID); err != nil {
+		s.logger.Printf("delete completed upload session: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "delete upload session"})
+		return
+	}
+
+	session.MIMEType = finalMIMEType
+	session.UpdatedAt = now
+	session.CompletedAt = &now
+	writeJSON(w, http.StatusOK, map[string]any{
+		"session": uploadSessionPayloadFromRecord(session),
+		"file": map[string]any{
+			"id":           record.ID,
+			"originalName": record.OriginalName,
+			"fileSize":     record.FileSize,
+			"mimeType":     record.MIMEType,
+			"uploadedAt":   now.Format(time.RFC3339),
+		},
+	})
+}
+
 func (s *Server) handleFilesCollection(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		methodNotAllowed(w)
@@ -216,7 +487,7 @@ func (s *Server) handleHostInfo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"uploadURL": s.publicURL,
+		"host": netstate.SnapshotHTTP(s.publicAddr),
 	})
 }
 
@@ -416,6 +687,77 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_, _ = w.Write(data)
+}
+
+func uploadSessionPayloadFromRecord(session db.UploadSession) uploadSessionPayload {
+	return uploadSessionPayload{
+		ID:            session.ID,
+		OriginalName:  session.OriginalName,
+		FileSize:      session.FileSize,
+		MIMEType:      session.MIMEType,
+		BytesReceived: session.BytesReceived,
+		Complete:      session.CompletedAt != nil,
+		CreatedAt:     session.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:     session.UpdatedAt.Format(time.RFC3339),
+	}
+}
+
+func normalizedResumeKey(resumeKey string, originalName string, fileSize int64, lastModified int64) string {
+	trimmed := strings.TrimSpace(resumeKey)
+	if trimmed != "" {
+		return trimmed
+	}
+	if strings.TrimSpace(originalName) == "" || fileSize <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("%s:%d:%d", strings.TrimSpace(originalName), fileSize, lastModified)
+}
+
+func parseUploadOffset(value string) (int64, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return 0, nil
+	}
+	parsed, err := strconv.ParseInt(trimmed, 10, 64)
+	if err != nil || parsed < 0 {
+		return 0, fmt.Errorf("parse upload offset: %w", err)
+	}
+	return parsed, nil
+}
+
+func (s *Server) syncUploadSessionProgress(ctx context.Context, session db.UploadSession) db.UploadSession {
+	if session.CompletedAt != nil {
+		return session
+	}
+
+	bytesOnDisk, err := s.storage.PartialSize(session.StoredPath)
+	if err != nil || bytesOnDisk == session.BytesReceived {
+		return session
+	}
+
+	session.BytesReceived = bytesOnDisk
+	session.UpdatedAt = time.Now().UTC()
+	if err := s.repo.UpdateUploadSessionProgress(ctx, session.ID, session.BytesReceived, session.UpdatedAt); err != nil {
+		return session
+	}
+	return session
+}
+
+func (s *Server) isUploadSessionExpired(session db.UploadSession, now time.Time) bool {
+	if s.uploadSessionTTL <= 0 || session.CompletedAt != nil {
+		return false
+	}
+	return session.UpdatedAt.Add(s.uploadSessionTTL).Before(now)
+}
+
+func (s *Server) abandonUploadSession(ctx context.Context, session db.UploadSession) error {
+	if err := s.storage.DeletePartial(session.StoredPath); err != nil {
+		return err
+	}
+	if err := s.repo.DeleteUploadSession(ctx, session.ID); err != nil && !errors.Is(err, db.ErrUploadSessionNotFound) {
+		return err
+	}
+	return nil
 }
 
 func methodNotAllowed(w http.ResponseWriter) {

@@ -22,6 +22,11 @@ type SaveResult struct {
 	FileName   string
 }
 
+type PendingResult struct {
+	StoredPath string
+	FileName   string
+}
+
 func New(root string) (*Service, error) {
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
@@ -110,6 +115,155 @@ func (s *Service) Save(id, originalName string, clientContentType string, src io
 		MIMEType:   mimeType,
 		FileName:   safeName,
 	}, nil
+}
+
+func (s *Service) PrepareResumable(id string, originalName string) (PendingResult, error) {
+	if id == "" {
+		return PendingResult{}, fmt.Errorf("missing storage id")
+	}
+
+	safeName := sanitizeFilename(originalName)
+	if safeName == "" {
+		safeName = "file"
+	}
+
+	storedPath := filepath.ToSlash(filepath.Join(id, safeName))
+	partPath, err := s.partialAbsolutePath(storedPath)
+	if err != nil {
+		return PendingResult{}, err
+	}
+
+	if err := os.MkdirAll(filepath.Dir(partPath), 0o755); err != nil {
+		return PendingResult{}, fmt.Errorf("create resumable upload directory: %w", err)
+	}
+
+	file, err := os.OpenFile(partPath, os.O_CREATE, 0o644)
+	if err != nil {
+		return PendingResult{}, fmt.Errorf("create resumable upload file: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return PendingResult{}, fmt.Errorf("close resumable upload file: %w", err)
+	}
+
+	return PendingResult{
+		StoredPath: storedPath,
+		FileName:   safeName,
+	}, nil
+}
+
+func (s *Service) PartialSize(storedPath string) (int64, error) {
+	partPath, err := s.partialAbsolutePath(storedPath)
+	if err != nil {
+		return 0, err
+	}
+
+	stat, err := os.Stat(partPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("stat partial file: %w", err)
+	}
+
+	return stat.Size(), nil
+}
+
+func (s *Service) AppendChunk(storedPath string, offset int64, src io.Reader) (int64, error) {
+	partPath, err := s.partialAbsolutePath(storedPath)
+	if err != nil {
+		return 0, err
+	}
+
+	if err := os.MkdirAll(filepath.Dir(partPath), 0o755); err != nil {
+		return 0, fmt.Errorf("create partial directory: %w", err)
+	}
+
+	file, err := os.OpenFile(partPath, os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return 0, fmt.Errorf("open partial file: %w", err)
+	}
+	defer file.Close()
+
+	stat, err := file.Stat()
+	if err != nil {
+		return 0, fmt.Errorf("stat partial file: %w", err)
+	}
+	if stat.Size() != offset {
+		return 0, fmt.Errorf("partial file offset mismatch: expected %d bytes, found %d", offset, stat.Size())
+	}
+
+	if _, err := file.Seek(offset, io.SeekStart); err != nil {
+		return 0, fmt.Errorf("seek partial file: %w", err)
+	}
+
+	written, err := io.Copy(file, src)
+	if err != nil {
+		return 0, fmt.Errorf("append chunk: %w", err)
+	}
+
+	return written, nil
+}
+
+func (s *Service) FinalizeResumable(storedPath string) error {
+	partPath, err := s.partialAbsolutePath(storedPath)
+	if err != nil {
+		return err
+	}
+	finalPath, err := s.absolutePath(storedPath)
+	if err != nil {
+		return err
+	}
+
+	if err := os.Rename(partPath, finalPath); err != nil {
+		return fmt.Errorf("finalize resumable upload: %w", err)
+	}
+
+	return nil
+}
+
+func (s *Service) DetectMIME(storedPath string, originalName string, clientContentType string) (string, error) {
+	file, _, err := s.Open(storedPath)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+
+	head := make([]byte, 512)
+	n, err := file.Read(head)
+	if err != nil && err != io.EOF {
+		return "", fmt.Errorf("read file head: %w", err)
+	}
+
+	detectedType := "application/octet-stream"
+	if n > 0 {
+		detectedType = http.DetectContentType(head[:n])
+	}
+
+	return chooseMIMEType(clientContentType, detectedType, originalName), nil
+}
+
+func (s *Service) DeletePartial(storedPath string) error {
+	partPath, err := s.partialAbsolutePath(storedPath)
+	if err != nil {
+		return err
+	}
+
+	if err := os.Remove(partPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove partial file: %w", err)
+	}
+
+	parent := filepath.Dir(partPath)
+	if sameDir(parent, s.root) {
+		return nil
+	}
+
+	if err := os.Remove(parent); err != nil && !os.IsNotExist(err) {
+		if !strings.Contains(err.Error(), "directory not empty") {
+			return fmt.Errorf("remove partial upload directory: %w", err)
+		}
+	}
+
+	return nil
 }
 
 func (s *Service) Open(storedPath string) (*os.File, string, error) {
@@ -227,4 +381,12 @@ func (s *Service) absolutePath(storedPath string) (string, error) {
 	}
 
 	return absolutePath, nil
+}
+
+func (s *Service) partialAbsolutePath(storedPath string) (string, error) {
+	absolutePath, err := s.absolutePath(storedPath)
+	if err != nil {
+		return "", err
+	}
+	return absolutePath + ".part", nil
 }

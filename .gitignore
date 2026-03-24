@@ -12,6 +12,7 @@
 coverage.out
 bin/
 dist/
+main
 
 # Local runtime data
 /data/*.db

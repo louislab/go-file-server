@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Upload Management</title>
-  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="/static/vendor/tailwindcss.js"></script>
   <script>
     tailwind.config = {
       theme: {
@@ -26,8 +26,8 @@
       },
     };
   </script>
-  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <script src="/static/vendor/vue.global.prod.js"></script>
+  <script src="/static/vendor/qrcode.min.js"></script>
 </head>
 <body class="min-h-screen bg-[radial-gradient(circle_at_top_left,rgba(16,16,16,0.05),transparent_36%),linear-gradient(180deg,#fafaf7_0%,#f4f4f1_100%)] text-ink antialiased">
   <div id="app" class="mx-auto w-[min(1120px,calc(100%-2rem))] py-8 md:py-10">
@@ -64,6 +64,98 @@
             </div>
           </div>
         </div>
+      </div>
+
+      <div class="mt-6 grid gap-4 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)]">
+        <article class="rounded-[24px] border border-line bg-mist/75 p-5">
+          <div class="flex items-start justify-between gap-4">
+            <div>
+              <p class="text-[0.72rem] uppercase tracking-[0.12em] text-muted">Recovery paths</p>
+              <h2 class="mt-2 font-display text-xl uppercase tracking-[0.04em]">Current network routes</h2>
+            </div>
+            <button
+              type="button"
+              @click="loadHostInfo"
+              :disabled="isLoadingHostInfo"
+              class="rounded-full border border-ink px-4 py-2 text-sm transition hover:bg-ink hover:text-white disabled:cursor-not-allowed disabled:opacity-45"
+            >
+              {{ isLoadingHostInfo ? 'Refreshing...' : 'Refresh routes' }}
+            </button>
+          </div>
+
+          <div class="mt-5 space-y-4">
+            <div class="rounded-[18px] border border-line bg-white px-4 py-4">
+              <p class="text-[0.72rem] uppercase tracking-[0.08em] text-muted">Preferred direct URL</p>
+              <a
+                v-if="host.uploadURL"
+                :href="host.uploadURL"
+                target="_blank"
+                rel="noreferrer"
+                class="mt-2 block break-all text-sm font-semibold underline decoration-line underline-offset-4 transition hover:text-muted"
+              >
+                {{ host.uploadURL }}
+              </a>
+              <p v-else class="mt-2 text-sm text-muted">No direct network path detected.</p>
+            </div>
+
+            <div class="rounded-[18px] border border-line bg-white px-4 py-4">
+              <p class="text-[0.72rem] uppercase tracking-[0.08em] text-muted">Bonjour hostname</p>
+              <a
+                v-if="host.bonjourURL"
+                :href="host.bonjourURL"
+                target="_blank"
+                rel="noreferrer"
+                class="mt-2 block break-all text-sm font-semibold underline decoration-line underline-offset-4 transition hover:text-muted"
+              >
+                {{ host.bonjourURL }}
+              </a>
+              <p v-else class="mt-2 text-sm text-muted">Bonjour hostname is not available on this host.</p>
+            </div>
+
+            <div class="rounded-[18px] border border-line bg-white px-4 py-4">
+              <div class="flex items-center justify-between gap-4">
+                <p class="text-[0.72rem] uppercase tracking-[0.08em] text-muted">Detected addresses</p>
+                <span class="text-xs text-muted">Updated {{ formatTimestamp(host.updatedAt) }}</span>
+              </div>
+              <ul v-if="host.addresses.length > 0" class="mt-3 space-y-3">
+                <li v-for="address in host.addresses" :key="address.interface + ':' + address.ip" class="rounded-[14px] border border-line bg-mist/50 px-3 py-3">
+                  <div class="flex flex-wrap items-center gap-2 text-[0.72rem] uppercase tracking-[0.08em] text-muted">
+                    <span>{{ address.interface }}</span>
+                    <span class="rounded-full border border-line px-2 py-0.5 text-[0.65rem]">{{ address.kind }}</span>
+                  </div>
+                  <a
+                    :href="address.url"
+                    target="_blank"
+                    rel="noreferrer"
+                    class="mt-2 block break-all text-sm font-semibold underline decoration-line underline-offset-4 transition hover:text-muted"
+                  >
+                    {{ address.url }}
+                  </a>
+                </li>
+              </ul>
+              <p v-else class="mt-3 text-sm text-muted">No active private or link-local IPv4 address detected.</p>
+            </div>
+          </div>
+        </article>
+
+        <article class="rounded-[24px] border border-line bg-mist/75 p-5">
+          <p class="text-[0.72rem] uppercase tracking-[0.12em] text-muted">Operator notes</p>
+          <h2 class="mt-2 font-display text-xl uppercase tracking-[0.04em]">Emergency routing</h2>
+          <ul class="mt-5 space-y-3 text-sm leading-6 text-muted">
+            <li>If the router changes DHCP leases, prefer the Bonjour hostname first and fall back to the direct IP URLs shown here.</li>
+            <li>If the router restarts, wait for the host to reconnect, then refresh this page to get the current addresses.</li>
+            <li>If no router path comes back, switch the Mac to its emergency network mode and use the new URL shown here.</li>
+          </ul>
+
+          <div v-if="host.warnings.length > 0" class="mt-5 rounded-[18px] border border-amber-300 bg-amber-50 px-4 py-4 text-sm text-amber-900">
+            <p class="font-semibold uppercase tracking-[0.08em]">Warnings</p>
+            <ul class="mt-2 space-y-2 leading-6">
+              <li v-for="warning in host.warnings" :key="warning">{{ warning }}</li>
+            </ul>
+          </div>
+
+          <p v-if="hostInfoError" class="mt-5 text-sm text-red-800">{{ hostInfoError }}</p>
+        </article>
       </div>
     </section>
 
@@ -211,17 +303,35 @@
           files: [],
           selectedIds: [],
           uploadURL: "",
+          host: {
+            uploadURL: "",
+            bonjourURL: "",
+            addresses: [],
+            warnings: [],
+            updatedAt: "",
+          },
           hostInfoError: "",
+          isLoadingHostInfo: false,
           isLoading: false,
           isBatchDeleting: false,
           statusMessage: "",
           statusKind: "",
           qrCodeInstance: null,
+          hostRefreshTimer: null,
         };
       },
       mounted() {
         this.loadHostInfo();
         this.loadFiles();
+        this.hostRefreshTimer = window.setInterval(() => {
+          this.loadHostInfo();
+        }, 15000);
+      },
+      beforeUnmount() {
+        if (this.hostRefreshTimer) {
+          window.clearInterval(this.hostRefreshTimer);
+          this.hostRefreshTimer = null;
+        }
       },
       computed: {
         selectedCount() {
@@ -236,6 +346,7 @@
       },
       methods: {
         async loadHostInfo() {
+          this.isLoadingHostInfo = true;
           this.hostInfoError = "";
 
           try {
@@ -245,13 +356,30 @@
               throw new Error(payload.error || "Failed to load upload address");
             }
 
-            this.uploadURL = typeof payload.uploadURL === "string" ? payload.uploadURL : "";
+            const host = payload.host && typeof payload.host === "object" ? payload.host : {};
+            this.host = {
+              uploadURL: typeof host.uploadURL === "string" ? host.uploadURL : "",
+              bonjourURL: typeof host.bonjourURL === "string" ? host.bonjourURL : "",
+              addresses: Array.isArray(host.addresses) ? host.addresses : [],
+              warnings: Array.isArray(host.warnings) ? host.warnings : [],
+              updatedAt: typeof host.updatedAt === "string" ? host.updatedAt : "",
+            };
+            this.uploadURL = this.host.uploadURL;
             this.$nextTick(() => {
               this.renderQRCode();
             });
           } catch (error) {
             this.uploadURL = "";
+            this.host = {
+              uploadURL: "",
+              bonjourURL: "",
+              addresses: [],
+              warnings: [],
+              updatedAt: "",
+            };
             this.hostInfoError = error instanceof Error ? error.message : "Failed to load upload address";
+          } finally {
+            this.isLoadingHostInfo = false;
           }
         },
         async loadFiles() {

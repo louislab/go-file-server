@@ -6,7 +6,7 @@ import (
 	"log"
 )
 
-//go:embed web/*
+//go:embed web
 var embeddedAssets embed.FS
 
 func mustAssetFS(logger *log.Logger) fs.FS {

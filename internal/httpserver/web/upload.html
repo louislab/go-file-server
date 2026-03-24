@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Local File Transfer</title>
-  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="/static/vendor/tailwindcss.js"></script>
   <script>
     tailwind.config = {
       theme: {
@@ -27,14 +27,14 @@
       },
     };
   </script>
-  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <script src="/static/vendor/vue.global.prod.js"></script>
 </head>
 <body class="min-h-screen bg-[radial-gradient(circle_at_top_left,rgba(16,16,16,0.05),transparent_36%),linear-gradient(180deg,#fafaf7_0%,#f4f4f1_100%)] text-ink antialiased">
   <div id="app" class="mx-auto w-[min(1120px,calc(100%-2rem))] py-8 md:py-10">
     <section class="rounded-t-[32px] border border-b-0 border-line bg-white/85 p-8 shadow-panel backdrop-blur">
       <p class="mb-3 text-[0.72rem] uppercase tracking-[0.18em] text-muted">Local File Transfer</p>
       <h1 class="font-display text-[clamp(2.25rem,5vw,4.5rem)] uppercase leading-[0.96]">Drop files onto the host machine.</h1>
-      <p class="mt-4 max-w-4xl text-base leading-7 text-muted">Choose files from Finder or drag them into the drop zone. The host receives them immediately after you confirm upload.</p>
+      <p class="mt-4 max-w-4xl text-base leading-7 text-muted">Choose files from Finder or drag them into the drop zone. Uploads are sent in chunks so a retry can continue from the last confirmed byte.</p>
     </section>
 
     <section class="rounded-b-[32px] border border-line bg-white/85 p-6 shadow-panel backdrop-blur">
@@ -86,12 +86,21 @@
         </div>
 
         <ul v-if="selectedFiles.length > 0" class="divide-y divide-line">
-          <li v-for="file in selectedFiles" :key="file.name + ':' + file.size + ':' + file.lastModified" class="flex items-center justify-between gap-4 px-5 py-4">
-            <div class="min-w-0">
-              <div class="break-words font-semibold">{{ file.name }}</div>
-              <div class="text-sm text-muted">{{ file.type || 'Binary file' }}</div>
+          <li v-for="file in selectedFiles" :key="file.name + ':' + file.size + ':' + file.lastModified" class="px-5 py-4">
+            <div class="flex items-start justify-between gap-4">
+              <div class="min-w-0 flex-1">
+                <div class="break-words font-semibold">{{ file.name }}</div>
+                <div class="text-sm text-muted">{{ file.type || 'Binary file' }}</div>
+              </div>
+              <div class="shrink-0 text-right">
+                <strong class="block">{{ formatBytes(file.size) }}</strong>
+                <span class="mt-2 block text-xs text-muted">{{ formatBytes(file.uploadedBytes) }} / {{ formatBytes(file.size) }}</span>
+              </div>
             </div>
-            <strong class="shrink-0">{{ formatBytes(file.size) }}</strong>
+            <div class="mt-4 h-2 w-full overflow-hidden rounded-full bg-mist">
+              <div class="h-full bg-ink transition-all" :style="{ width: `${file.progressPercent}%` }"></div>
+            </div>
+            <div class="mt-2 text-xs uppercase tracking-[0.08em] text-muted">{{ file.statusLabel }}</div>
           </li>
         </ul>
         <div v-else class="px-5 py-6 text-muted">No files selected yet.</div>
@@ -104,7 +113,7 @@
           :disabled="isUploading || selectedFiles.length === 0"
           class="min-w-[180px] rounded-full border border-ink bg-ink px-5 py-3 text-white transition hover:bg-white hover:text-ink disabled:cursor-not-allowed disabled:opacity-45"
         >
-          {{ isUploading ? 'Uploading...' : 'Upload files' }}
+          {{ isUploading ? 'Uploading...' : 'Upload or resume files' }}
         </button>
       </div>
 
@@ -129,6 +138,8 @@
           isUploading: false,
           statusMessage: "",
           statusKind: "",
+          chunkSize: 4 * 1024 * 1024,
+          maxConcurrentUploads: 3,
         };
       },
       computed: {
@@ -164,7 +175,7 @@
           this.setStatus(`Ignored ${folderLabel}. Only files can be uploaded.`, "error");
         },
         setFiles(files) {
-          this.selectedFiles = files;
+          this.selectedFiles = files.map((file) => this.createUploadEntry(file));
         },
         extractDroppedFiles(dataTransfer) {
           if (!dataTransfer) {
@@ -215,34 +226,149 @@
             return;
           }
 
-          const formData = new FormData();
-          for (const file of this.selectedFiles) {
-            formData.append("files", file, file.name);
+          const pendingFiles = this.selectedFiles.filter((file) => !file.complete);
+          if (pendingFiles.length === 0) {
+            this.setStatus("All selected files are already uploaded.", "success");
+            return;
           }
 
           this.isUploading = true;
-          this.setStatus(`Uploading ${this.selectedFiles.length} file${this.selectedFiles.length === 1 ? "" : "s"}...`, "");
+          const concurrency = Math.min(this.maxConcurrentUploads, pendingFiles.length);
+          this.setStatus(`Uploading ${pendingFiles.length} file${pendingFiles.length === 1 ? "" : "s"} with up to ${concurrency} at a time...`, "");
 
           try {
-            const response = await fetch("/api/upload", {
-              method: "POST",
-              body: formData,
-            });
+            const result = await this.uploadPendingFiles(pendingFiles, concurrency);
 
-            const payload = await response.json().catch(() => ({}));
-            if (!response.ok) {
-              throw new Error(payload.error || "Upload failed");
+            if (result.failedCount > 0) {
+              this.setStatus(
+                `Uploaded ${result.uploadedCount} file${result.uploadedCount === 1 ? "" : "s"}. ${result.failedCount} file${result.failedCount === 1 ? " remains" : "s remain"} for retry.`,
+                result.uploadedCount > 0 ? "success" : "error",
+              );
+            } else {
+              this.setStatus(`Uploaded ${result.uploadedCount} file${result.uploadedCount === 1 ? "" : "s"} successfully.`, "success");
             }
 
-            const uploadedCount = Array.isArray(payload.files) ? payload.files.length : 0;
-            this.setStatus(`Uploaded ${uploadedCount} file${uploadedCount === 1 ? "" : "s"} successfully.`, "success");
-            this.selectedFiles = [];
-            this.$refs.fileInput.value = "";
+            this.selectedFiles = this.selectedFiles.filter((file) => !file.complete);
+            if (this.selectedFiles.length === 0) {
+              this.$refs.fileInput.value = "";
+            }
           } catch (error) {
             this.setStatus(error instanceof Error ? error.message : "Upload failed", "error");
           } finally {
             this.isUploading = false;
           }
+        },
+        async uploadPendingFiles(files, concurrency) {
+          let nextIndex = 0;
+          let uploadedCount = 0;
+          let failedCount = 0;
+
+          const workers = Array.from({ length: concurrency }, async () => {
+            while (nextIndex < files.length) {
+              const file = files[nextIndex];
+              nextIndex += 1;
+
+              try {
+                await this.uploadFile(file);
+                if (file.complete) {
+                  uploadedCount += 1;
+                }
+              } catch (error) {
+                failedCount += 1;
+                file.statusLabel = "Paused";
+                file.lastError = error instanceof Error ? error.message : "Upload failed";
+              }
+            }
+          });
+
+          await Promise.all(workers);
+          return { uploadedCount, failedCount };
+        },
+        createUploadEntry(file) {
+          return {
+            file,
+            name: file.name,
+            size: file.size,
+            type: file.type,
+            lastModified: file.lastModified,
+            resumeKey: this.createResumeKey(file),
+            sessionId: "",
+            uploadedBytes: 0,
+            progressPercent: 0,
+            statusLabel: "Ready",
+            lastError: "",
+            complete: false,
+          };
+        },
+        createResumeKey(file) {
+          return `${file.name}:${file.size}:${file.lastModified}`;
+        },
+        async uploadFile(file) {
+          file.lastError = "";
+          file.statusLabel = file.uploadedBytes > 0 ? "Resuming" : "Preparing";
+
+          const session = await this.initUploadSession(file);
+          file.sessionId = session.id || "";
+          file.uploadedBytes = Number(session.bytesReceived || 0);
+          file.progressPercent = file.size === 0 ? 0 : Math.min(100, Math.round((file.uploadedBytes / file.size) * 100));
+
+          while (file.uploadedBytes < file.size) {
+            file.statusLabel = file.uploadedBytes > 0 ? "Uploading" : "Starting";
+
+            const nextOffset = Math.min(file.uploadedBytes + this.chunkSize, file.size);
+            const chunk = file.file.slice(file.uploadedBytes, nextOffset);
+
+            const response = await fetch(`/api/upload/sessions/${file.sessionId}`, {
+              method: "PUT",
+              headers: {
+                "Content-Type": "application/octet-stream",
+                "X-Upload-Offset": String(file.uploadedBytes),
+              },
+              body: chunk,
+            });
+
+            const payload = await response.json().catch(() => ({}));
+            if (response.status === 409 && payload.expectedOffset !== undefined) {
+              file.uploadedBytes = Number(payload.expectedOffset || 0);
+              file.progressPercent = Math.min(100, Math.round((file.uploadedBytes / file.size) * 100));
+              continue;
+            }
+            if (!response.ok) {
+              file.statusLabel = "Paused";
+              throw new Error(payload.error || `Upload failed for ${file.name}`);
+            }
+
+            const sessionState = payload.session || {};
+            file.uploadedBytes = Number(sessionState.bytesReceived || 0);
+            file.progressPercent = Math.min(100, Math.round((file.uploadedBytes / file.size) * 100));
+            file.complete = Boolean(sessionState.complete);
+          }
+
+          file.complete = true;
+          file.statusLabel = "Uploaded";
+          file.progressPercent = 100;
+        },
+        async initUploadSession(file) {
+          const response = await fetch("/api/upload/sessions", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              originalName: file.name,
+              fileSize: file.size,
+              mimeType: file.type || "application/octet-stream",
+              lastModified: file.lastModified,
+              resumeKey: file.resumeKey,
+            }),
+          });
+
+          const payload = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            throw new Error(payload.error || `Failed to start upload for ${file.name}`);
+          }
+
+          return payload.session || {};
         },
         formatBytes(bytes) {
           if (bytes < 1024) {
