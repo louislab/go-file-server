@@ -28,6 +28,60 @@
     };
   </script>
   <script src="/static/vendor/vue.global.prod.js"></script>
+  <style>
+    .app-button {
+      -webkit-tap-highlight-color: transparent;
+      -webkit-appearance: none;
+      appearance: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      opacity: 1;
+      border-radius: 9999px;
+      transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease, opacity 0.2s ease;
+    }
+
+    .app-button:disabled {
+      cursor: not-allowed;
+    }
+
+    .app-button-primary {
+      background-color: #101010;
+      border-color: #101010;
+      color: #fff;
+    }
+
+    .app-button-primary:disabled {
+      background-color: rgba(16, 16, 16, 0.45);
+      border-color: rgba(16, 16, 16, 0.45);
+      color: #fff;
+    }
+
+    .app-button-secondary {
+      background-color: #fff;
+      border-color: #101010;
+      color: #101010;
+    }
+
+    .app-button-secondary:disabled {
+      background-color: rgba(16, 16, 16, 0.08);
+      border-color: rgba(16, 16, 16, 0.18);
+      color: rgba(16, 16, 16, 0.45);
+    }
+
+    @media (hover: hover) and (pointer: fine) {
+      .app-button-primary:hover:not(:disabled) {
+        background-color: #fff;
+        color: #101010;
+      }
+
+      .app-button-secondary:hover:not(:disabled) {
+        background-color: #101010;
+        color: #fff;
+      }
+    }
+  </style>
 </head>
 <body class="min-h-screen bg-[radial-gradient(circle_at_top_left,rgba(16,16,16,0.05),transparent_36%),linear-gradient(180deg,#fafaf7_0%,#f4f4f1_100%)] text-ink antialiased">
   <div id="app" class="mx-auto w-[min(1120px,calc(100%-2rem))] py-8 md:py-10">
@@ -79,7 +133,7 @@
             type="button"
             @click="clearFiles"
             :disabled="isUploading || selectedFiles.length === 0"
-            class="rounded-full border border-ink px-4 py-2 transition hover:bg-ink hover:text-white disabled:cursor-not-allowed disabled:opacity-45"
+            class="app-button app-button-secondary border px-4 py-2"
           >
             Clear
           </button>
@@ -111,7 +165,7 @@
           type="button"
           @click="uploadFiles"
           :disabled="isUploading || selectedFiles.length === 0"
-          class="min-w-[180px] rounded-full border border-ink bg-ink px-5 py-3 text-white transition hover:bg-white hover:text-ink disabled:cursor-not-allowed disabled:opacity-45"
+          class="app-button app-button-primary w-full border px-5 py-3 sm:w-auto sm:min-w-[240px]"
         >
           {{ isUploading ? 'Uploading...' : 'Upload or resume files' }}
         </button>

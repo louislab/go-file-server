@@ -28,6 +28,59 @@
   </script>
   <script src="/static/vendor/vue.global.prod.js"></script>
   <script src="/static/vendor/qrcode.min.js"></script>
+  <style>
+    .app-button {
+      -webkit-tap-highlight-color: transparent;
+      -webkit-appearance: none;
+      appearance: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      border-radius: 9999px;
+      transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease, opacity 0.2s ease;
+    }
+
+    .app-button:disabled {
+      cursor: not-allowed;
+    }
+
+    .app-button-secondary {
+      background-color: #fff;
+      border-color: #101010;
+      color: #101010;
+    }
+
+    .app-button-secondary:disabled {
+      background-color: rgba(16, 16, 16, 0.08);
+      border-color: rgba(16, 16, 16, 0.18);
+      color: rgba(16, 16, 16, 0.45);
+    }
+
+    .app-button-danger {
+      background-color: #fff;
+      border-color: #991b1b;
+      color: #991b1b;
+    }
+
+    .app-button-danger:disabled {
+      background-color: rgba(153, 27, 27, 0.08);
+      border-color: rgba(153, 27, 27, 0.25);
+      color: rgba(153, 27, 27, 0.5);
+    }
+
+    @media (hover: hover) and (pointer: fine) {
+      .app-button-secondary:hover:not(:disabled) {
+        background-color: #101010;
+        color: #fff;
+      }
+
+      .app-button-danger:hover:not(:disabled) {
+        background-color: #991b1b;
+        color: #fff;
+      }
+    }
+  </style>
 </head>
 <body class="min-h-screen bg-[radial-gradient(circle_at_top_left,rgba(16,16,16,0.05),transparent_36%),linear-gradient(180deg,#fafaf7_0%,#f4f4f1_100%)] text-ink antialiased">
   <div id="app" class="mx-auto w-[min(1120px,calc(100%-2rem))] py-8 md:py-10">
@@ -77,7 +130,7 @@
               type="button"
               @click="loadHostInfo"
               :disabled="isLoadingHostInfo"
-              class="rounded-full border border-ink px-4 py-2 text-sm transition hover:bg-ink hover:text-white disabled:cursor-not-allowed disabled:opacity-45"
+              class="app-button app-button-secondary border px-4 py-2 text-sm"
             >
               {{ isLoadingHostInfo ? 'Refreshing...' : 'Refresh routes' }}
             </button>
@@ -170,7 +223,7 @@
             type="button"
             @click="deleteSelectedFiles"
             :disabled="isLoading || isBatchDeleting || selectedCount === 0"
-            class="rounded-full border border-red-800 px-4 py-2 text-red-800 transition hover:bg-red-800 hover:text-white disabled:cursor-not-allowed disabled:opacity-45"
+            class="app-button app-button-danger border px-4 py-2"
           >
             {{ isBatchDeleting ? `Deleting ${selectedCount}...` : `Delete selected (${selectedCount})` }}
           </button>
@@ -178,7 +231,7 @@
             type="button"
             @click="loadFiles"
             :disabled="isLoading || isBatchDeleting"
-            class="rounded-full border border-ink px-4 py-2 transition hover:bg-ink hover:text-white disabled:cursor-not-allowed disabled:opacity-45"
+            class="app-button app-button-secondary border px-4 py-2"
           >
             {{ isLoading ? 'Refreshing...' : 'Refresh' }}
           </button>
@@ -265,14 +318,14 @@
                       :href="`/api/files/${file.id}/view`"
                       target="_blank"
                       rel="noreferrer"
-                      class="inline-flex items-center rounded-full border border-ink px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.08em] transition hover:bg-ink hover:text-white"
+                      class="app-button app-button-secondary border px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.08em]"
                     >
                       View
                     </a>
                     <a
                       :href="`/api/files/${file.id}/view?download=1`"
                       download
-                      class="inline-flex items-center rounded-full border border-ink px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.08em] transition hover:bg-ink hover:text-white"
+                      class="app-button app-button-secondary border px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.08em]"
                     >
                       Download
                     </a>
@@ -280,7 +333,7 @@
                       type="button"
                       @click="deleteFile(file)"
                       :disabled="isBatchDeleting"
-                      class="rounded-full border border-red-800 px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.08em] text-red-800 transition hover:bg-red-800 hover:text-white"
+                      class="app-button app-button-danger border px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.08em]"
                     >
                       Delete
                     </button>
