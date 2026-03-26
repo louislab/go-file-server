@@ -140,6 +140,8 @@
           statusKind: "",
           chunkSize: 4 * 1024 * 1024,
           maxConcurrentUploads: 3,
+          requestTimeoutMs: 45000,
+          maxChunkRetries: 3,
         };
       },
       computed: {
@@ -303,45 +305,124 @@
         createResumeKey(file) {
           return `${file.name}:${file.size}:${file.lastModified}`;
         },
+        async readChunk(chunk) {
+          if (typeof chunk.arrayBuffer === "function") {
+            return chunk.arrayBuffer();
+          }
+
+          return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = () => reject(new Error("Failed to read upload chunk"));
+            reader.readAsArrayBuffer(chunk);
+          });
+        },
+        async fetchWithTimeout(url, options, timeoutMs = this.requestTimeoutMs) {
+          if (typeof AbortController === "undefined") {
+            return fetch(url, options);
+          }
+
+          const controller = new AbortController();
+          const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+
+          try {
+            return await fetch(url, { ...options, signal: controller.signal });
+          } catch (error) {
+            if (error instanceof DOMException && error.name === "AbortError") {
+              throw new Error("Upload request timed out");
+            }
+            throw error;
+          } finally {
+            window.clearTimeout(timer);
+          }
+        },
+        applySessionState(file, sessionState) {
+          file.uploadedBytes = Number(sessionState.bytesReceived || 0);
+          file.progressPercent = file.size === 0
+            ? 100
+            : Math.min(100, Math.round((file.uploadedBytes / file.size) * 100));
+          file.complete = Boolean(sessionState.complete) || file.uploadedBytes >= file.size;
+        },
+        async loadUploadSession(sessionId) {
+          const response = await fetch(`/api/upload/sessions/${sessionId}`);
+          const payload = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            throw new Error(payload.error || "Failed to load upload session");
+          }
+          return payload.session || {};
+        },
+        async uploadChunk(file, startOffset, endOffset) {
+          const chunk = file.file.slice(startOffset, endOffset);
+          const chunkBody = await this.readChunk(chunk);
+
+          const response = await this.fetchWithTimeout(`/api/upload/sessions/${file.sessionId}`, {
+            method: "PUT",
+            headers: {
+              "Content-Type": "application/octet-stream",
+              "X-Upload-Offset": String(startOffset),
+            },
+            body: chunkBody,
+          });
+
+          const payload = await response.json().catch(() => ({}));
+          if (response.status === 409 && payload.expectedOffset !== undefined) {
+            return {
+              recovered: true,
+              session: payload.session || { bytesReceived: Number(payload.expectedOffset || 0) },
+            };
+          }
+          if (!response.ok) {
+            throw new Error(payload.error || `Upload failed for ${file.name}`);
+          }
+
+          return {
+            recovered: false,
+            session: payload.session || {},
+          };
+        },
         async uploadFile(file) {
           file.lastError = "";
           file.statusLabel = file.uploadedBytes > 0 ? "Resuming" : "Preparing";
 
           const session = await this.initUploadSession(file);
           file.sessionId = session.id || "";
-          file.uploadedBytes = Number(session.bytesReceived || 0);
-          file.progressPercent = file.size === 0 ? 0 : Math.min(100, Math.round((file.uploadedBytes / file.size) * 100));
+          this.applySessionState(file, session);
 
           while (file.uploadedBytes < file.size) {
             file.statusLabel = file.uploadedBytes > 0 ? "Uploading" : "Starting";
 
-            const nextOffset = Math.min(file.uploadedBytes + this.chunkSize, file.size);
-            const chunk = file.file.slice(file.uploadedBytes, nextOffset);
+            const chunkStart = file.uploadedBytes;
+            const nextOffset = Math.min(chunkStart + this.chunkSize, file.size);
+            let attempt = 0;
 
-            const response = await fetch(`/api/upload/sessions/${file.sessionId}`, {
-              method: "PUT",
-              headers: {
-                "Content-Type": "application/octet-stream",
-                "X-Upload-Offset": String(file.uploadedBytes),
-              },
-              body: chunk,
-            });
+            while (attempt < this.maxChunkRetries) {
+              attempt += 1;
 
-            const payload = await response.json().catch(() => ({}));
-            if (response.status === 409 && payload.expectedOffset !== undefined) {
-              file.uploadedBytes = Number(payload.expectedOffset || 0);
-              file.progressPercent = Math.min(100, Math.round((file.uploadedBytes / file.size) * 100));
-              continue;
+              try {
+                const result = await this.uploadChunk(file, chunkStart, nextOffset);
+                this.applySessionState(file, result.session);
+                break;
+              } catch (error) {
+                let sessionState = null;
+
+                try {
+                  sessionState = await this.loadUploadSession(file.sessionId);
+                  this.applySessionState(file, sessionState);
+                } catch (sessionError) {
+                  sessionState = null;
+                }
+
+                if (file.complete || file.uploadedBytes > chunkStart) {
+                  break;
+                }
+                if (attempt >= this.maxChunkRetries) {
+                  file.statusLabel = "Paused";
+                  throw error;
+                }
+
+                file.statusLabel = "Retrying";
+              }
             }
-            if (!response.ok) {
-              file.statusLabel = "Paused";
-              throw new Error(payload.error || `Upload failed for ${file.name}`);
-            }
-
-            const sessionState = payload.session || {};
-            file.uploadedBytes = Number(sessionState.bytesReceived || 0);
-            file.progressPercent = Math.min(100, Math.round((file.uploadedBytes / file.size) * 100));
-            file.complete = Boolean(sessionState.complete);
           }
 
           file.complete = true;
