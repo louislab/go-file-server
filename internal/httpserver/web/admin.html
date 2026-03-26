@@ -249,7 +249,7 @@
       <div class="mt-4 overflow-hidden rounded-[24px] border border-line bg-white/90">
         <div v-if="files.length === 0" class="px-5 py-8 text-muted">No uploads yet.</div>
 
-        <div v-else class="overflow-x-auto">
+        <div v-else class="max-h-[32rem] overflow-auto">
           <table class="min-w-[960px] w-full table-fixed border-collapse">
             <colgroup>
               <col class="w-16">
@@ -261,7 +261,7 @@
             </colgroup>
             <thead class="border-b border-line">
               <tr class="text-left text-xs uppercase tracking-[0.08em] text-muted">
-                <th class="px-5 py-4 text-center">
+                <th class="sticky top-0 z-10 bg-white/95 px-5 py-4 text-center backdrop-blur">
                   <button
                     type="button"
                     role="checkbox"
@@ -277,11 +277,11 @@
                     </svg>
                   </button>
                 </th>
-                <th class="px-5 py-4">Name</th>
-                <th class="px-5 py-4">Size</th>
-                <th class="px-5 py-4">Uploaded</th>
-                <th class="px-5 py-4">Origin</th>
-                <th class="px-5 py-4">Actions</th>
+                <th class="sticky top-0 z-10 bg-white/95 px-5 py-4 backdrop-blur">Name</th>
+                <th class="sticky top-0 z-10 bg-white/95 px-5 py-4 backdrop-blur">Size</th>
+                <th class="sticky top-0 z-10 bg-white/95 px-5 py-4 backdrop-blur">Uploaded</th>
+                <th class="sticky top-0 z-10 bg-white/95 px-5 py-4 backdrop-blur">Origin</th>
+                <th class="sticky top-0 z-10 bg-white/95 px-5 py-4 backdrop-blur">Actions</th>
               </tr>
             </thead>
             <tbody class="divide-y divide-line">

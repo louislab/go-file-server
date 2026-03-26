@@ -128,7 +128,12 @@
 
       <section class="mt-6 overflow-hidden rounded-[24px] border border-line bg-white/90">
         <div class="flex items-center justify-between gap-4 px-5 py-4">
-          <h2 class="font-display text-base uppercase tracking-[0.08em]">Selection</h2>
+          <div class="flex flex-col sm:flex-row items-start sm:items-center gap-3">
+            <h2 class="font-display text-base uppercase tracking-[0.08em]">Selection</h2>
+            <span class="rounded-full border border-line bg-surface px-3 py-1 text-xs font-semibold uppercase tracking-[0.08em] text-muted">
+              {{ selectedFiles.length }} file{{ selectedFiles.length === 1 ? '' : 's' }}
+            </span>
+          </div>
           <button
             type="button"
             @click="clearFiles"
@@ -139,25 +144,27 @@
           </button>
         </div>
 
-        <ul v-if="selectedFiles.length > 0" class="divide-y divide-line">
-          <li v-for="file in selectedFiles" :key="file.name + ':' + file.size + ':' + file.lastModified" class="px-5 py-4">
-            <div class="flex items-start justify-between gap-4">
-              <div class="min-w-0 flex-1">
-                <div class="break-words font-semibold">{{ file.name }}</div>
-                <div class="text-sm text-muted">{{ file.type || 'Binary file' }}</div>
+        <div class="max-h-[26rem] overflow-y-auto">
+          <ul v-if="selectedFiles.length > 0" class="divide-y divide-line">
+            <li v-for="file in selectedFiles" :key="file.name + ':' + file.size + ':' + file.lastModified" class="px-5 py-4">
+              <div class="flex items-start justify-between gap-4">
+                <div class="min-w-0 flex-1">
+                  <div class="break-words font-semibold">{{ file.name }}</div>
+                  <div class="text-sm text-muted">{{ file.type || 'Binary file' }}</div>
+                </div>
+                <div class="shrink-0 text-right">
+                  <strong class="block">{{ formatBytes(file.size) }}</strong>
+                  <span class="mt-2 block text-xs text-muted">{{ formatBytes(file.uploadedBytes) }} / {{ formatBytes(file.size) }}</span>
+                </div>
               </div>
-              <div class="shrink-0 text-right">
-                <strong class="block">{{ formatBytes(file.size) }}</strong>
-                <span class="mt-2 block text-xs text-muted">{{ formatBytes(file.uploadedBytes) }} / {{ formatBytes(file.size) }}</span>
+              <div class="mt-4 h-2 w-full overflow-hidden rounded-full bg-mist">
+                <div class="h-full bg-ink transition-all" :style="{ width: `${file.progressPercent}%` }"></div>
               </div>
-            </div>
-            <div class="mt-4 h-2 w-full overflow-hidden rounded-full bg-mist">
-              <div class="h-full bg-ink transition-all" :style="{ width: `${file.progressPercent}%` }"></div>
-            </div>
-            <div class="mt-2 text-xs uppercase tracking-[0.08em] text-muted">{{ file.statusLabel }}</div>
-          </li>
-        </ul>
-        <div v-else class="px-5 py-6 text-muted">No files selected yet.</div>
+              <div class="mt-2 text-xs uppercase tracking-[0.08em] text-muted">{{ file.statusLabel }}</div>
+            </li>
+          </ul>
+          <div v-else class="px-5 py-6 text-muted">No files selected yet.</div>
+        </div>
       </section>
 
       <div class="mt-6 flex justify-end">
